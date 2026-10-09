@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F1 Track Creator</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #10151d;
+  color: white;
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
+header {
+  padding: 15px;
+  background: #d71920;
+  font-size: 25px;
+  font-weight: bold;
+  letter-spacing: 2px;
+}
+.panel {
+  padding: 12px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+button {
+  border: 0;
+  border-radius: 6px;
+  padding: 11px 15px;
+  font-weight: bold;
+  cursor: pointer;
+  background: #e31b23;
+  color: white;
+}
+button:hover { background: #ff4148; }
+button:disabled { opacity: .4; cursor: default; }
+.info {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 25px;
+  padding: 8px;
+  font-size: 16px;
+}
+#game {
+  display: block;
+  width: min(100%, 1000px);
+  height: auto;
+  margin: auto;
+  background: #357b40;
+  cursor: crosshair;
+  touch-action: manipulation;
+}
+.help {
+  max-width: 850px;
+  padding: 15px;
+  margin: auto;
+  color: #d5dce5;
+  line-height: 1.6;
+}
+</style>
+</head>
+<body>
+
+<header>🏁 F1 TRACK CREATOR</header>
+
+<div class="panel">
+  <button id="add">✏️ Projektuj tor</button>
+  <button id="undo">↩ Cofnij punkt</button>
+  <button id="close">🔄 Zamknij tor</button>
+  <button id="race">🏎️ Start wyścigu</button>
+  <button id="reset">🗑️ Nowy tor</button>
+</div>
+
+<div class="info">
+  <span id="mode">Tryb: projektowanie</span>
+  <span>🏁 Okrążenie: <b id="lap">0</b>/3</span>
+  <span>⏱️ Czas: <b id="time">0.00</b> s</span>
+  <span>🚀 Prędkość: <b id="speed">0</b> km/h</span>
+</div>
+
+<canvas id="game" width="1000" height="650"></canvas>
+
+<div class="help">
+  <b>JAK GRAĆ?</b><br>
+  1. Klikaj na zielonej planszy, aby tworzyć punkty swojego toru.<br>
+  2. Dodaj co najmniej 5 punktów, a następnie kliknij „Zamknij tor”.<br>
+  3. Kliknij „Start wyścigu”, aby ruszyć!<br>
+  4. Sterowanie: <b>W / ↑</b> gaz, <b>S / ↓</b> hamulec,
+  <b>A / ←</b> skręt w lewo, <b>D / →</b> skręt w prawo.<br>
+  5. Ścigaj się z czerwonym bolidem AI i ukończ 3 okrążenia.
+  Na telefonie możesz używać przycisków sterowania pod planszą.
+</div>
+
+<div class="panel" id="mobile">
+  <button data-key="ArrowLeft">⬅️</button>
+  <button data-key="ArrowUp">⬆️ Gaz</button>
+  <button data-key="ArrowDown">⬇️ Hamulec</button>
+  <button data-key="ArrowRight">➡️</button>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let points = [];
+let closed = false;
+let racing = false;
+let finished = false;
+let mode = "edit";
+let elapsed = 0;
+let lastTime = 0;
+let laps = 0;
+let playerNext = 1;
+let aiNext = 1;
+let keys = {};
+let car, ai;
+
+const W = canvas.width, H = canvas.height;
+const roadWidth = 76;
+
+function newCar(x, y, angle, color) {
+  return {
+    x, y, angle, color,
+    speed: 0,
+    maxSpeed: 245,
+    lap: 0,
+    next: 1,
+    lastPoint: -1
+  };
+}
+
+function updateInfo() {
+  document.getElementById("mode").textContent =
+    finished ? "🏆 Wyścig ukończony!" :
+    racing ? "Tryb: wyścig" : "Tryb: projektowanie";
+  document.getElementById("lap").textContent = laps;
+  document.getElementById("time").textContent = elapsed.toFixed(2);
+  document.getElementById("speed").textContent =
+    Math.round(Math.abs(car ? car.speed : 0));
+}
+
+function startPosition() {
+  const p = points[0];
+  const q = points[1];
+  return {
+    x: p.x, y: p.y,
+    angle: Math.atan2(q.y - p.y, q.x - p.x)
+  };
+}
+
+function setupCars() {
+  const s = startPosition();
+  const offsetX = Math.cos(s.angle + Math.PI/2) * 23;
+  const offsetY = Math.sin(s.angle + Math.PI/2) * 23;
+  car = newCar(s.x - offsetX, s.y - offsetY, s.angle, "#16a6ff");
+  ai = newCar(s.x + offsetX, s.y + offsetY, s.angle, "#ed3038");
+  car.next = 1;
+  ai.next = 1;
+  laps = 0;
+  elapsed = 0;
+  finished = false;
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function drawTrack() {
+  ctx.fillStyle = "#357b40";
+  ctx.fillRect(0, 0, W, H);
+
+  // Trawa i delikatne linie dekoracyjne
+  ctx.strokeStyle = "rgba(255,255,255,.045)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+
+  if (!points.length) {
+    ctx.fillStyle = "white";
+    ctx.font = "bold 25px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("Zaprojektuj swój tor F1!", W/2, H/2);
+    ctx.font = "17px Arial";
+    ctx.fillText("Klikaj na planszy, aby dodawać punkty trasy", W/2, H/2 + 35);
+    return;
+  }
+
+  if (points.length > 1) {
+    // Pobocze
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    if (closed) ctx.closePath();
+    ctx.strokeStyle = "#d9d9d9";
+    ctx.lineWidth = roadWidth + 18;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    // Czerwono-białe krawężniki
+    ctx.setLineDash([18, 18]);
+    ctx.strokeStyle = "#ed3038";
+    ctx.lineWidth = roadWidth + 12;
+    ctx.stroke();
+    ctx.setLineDash([18, 18]);
+    ctx.lineDashOffset = 18;
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = roadWidth + 12;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+
+    // Asfalt
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      if (!i) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    if (closed) ctx.closePath();
+    ctx.strokeStyle = "#353a42";
+    ctx.lineWidth = roadWidth;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    // Linia środkowa
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      if (!i) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    if (closed) ctx.closePath();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([12, 18]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Punkty projektu
+  if (!racing) {
+    points.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = i === 0 ? "#ffe34d" : "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#151515";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = "white";
+      ctx.font = "bold 13px Arial";
+      ctx.fillText(i === 0 ? "START" : i, p.x + 9, p.y - 9);
+    });
+  }
+
+  if (closed) drawStartLine();
+}
+
+function drawStartLine() {
+  const p = points[0], q = points[1];
+  const angle = Math.atan2(q.y - p.y, q.x - p.x);
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(angle);
+  const count = 8;
+  for (let i = 0; i < count; i++) {
+    ctx.fillStyle = i % 2 ? "#111" : "#fff";
+    ctx.fillRect(-5, -roadWidth/2 + i*roadWidth/count,
+      10, roadWidth/count);
+  }
+  ctx.restore();
+}
+
+function drawCar(c) {
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate(c.angle);
+
+  // Cień
+  ctx.fillStyle = "rgba(0,0,0,.3)";
+  ctx.fillRect(-17, -8, 40, 23);
+
+  // Koła
+  ctx.fillStyle = "#101116";
+  for (const x of [-10, 10]) {
+    ctx.fillRect(x - 5, -13, 10, 7);
+    ctx.fillRect(x - 5, 6, 10, 7);
+  }
+
+  // Nadwozie
+  ctx.fillStyle = c.color;
+  ctx.beginPath();
+  ctx.moveTo(24, 0);
+  ctx.lineTo(10, -8);
+  ctx.lineTo(-14, -7);
+  ctx.lineTo(-19, -12);
+  ctx.lineTo(-22, -12);
+  ctx.lineTo(-20, -4);
+  ctx.lineTo(-12, 0);
+  ctx.lineTo(-20, 4);
+  ctx.lineTo(-22, 12);
+  ctx.lineTo(-19, 12);
+  ctx.lineTo(-14, 7);
+  ctx.lineTo(10, 8);
+  ctx.closePath();
+  ctx.fill();
+
+  // Kokpit
+  ctx.fillStyle = "#171b25";
+  ctx.beginPath();
+  ctx.ellipse(1, 0, 7, 4, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Skrzydła
+  ctx.fillStyle = "#111318";
+  ctx.fillRect(-19, -11, 9, 22);
+  ctx.fillRect(12, -12, 4, 24);
+  ctx.restore();
+}
+
+function nearestTarget(c) {
+  return points[c.next % points.length];
+}
+
+function moveAI(c, dt) {
+  const target = nearestTarget(c);
+  const desired = Math.atan2(target.y - c.y, target.x - c.x);
+  let diff = desired - c.angle;
+  while (diff > Math.PI) diff -= Math.PI*2;
+  while (diff < -Math.PI) diff += Math.PI*2;
+
+  c.angle += Math.max(-2.5*dt, Math.min(2.5*dt, diff*3.5*dt));
+  const targetSpeed = Math.abs(diff) > .8 ? 95 :
+                      Math.abs(diff) > .4 ? 155 : 205;
+  c.speed += Math.max(-100*dt, Math.min(75*dt, targetSpeed-c.speed));
+  c.x += Math.cos(c.angle)*c.speed*dt;
+  c.y += Math.sin(c.angle)*c.speed*dt;
+
+  if (dist(c, target) < 35) {
+    c.next = (c.next + 1) % points.length;
+    if (c.next === 1) {
+      c.lap++;
+      if (c.lap >= 3) finished = true;
+    }
+  }
+}
+
+function movePlayer(dt) {
+  if (keys.ArrowUp || keys.KeyW) car.speed += 130*dt;
+  else car.speed -= 25*dt;
+
+  if (keys.ArrowDown || keys.KeyS) car.speed -= 220*dt;
+  car.speed = Math.max(-50, Math.min(car.maxSpeed, car.speed));
+
+  const steer = (keys.ArrowRight || keys.KeyD ? 1 : 0) -
+                (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+
+  const factor = Math.min(1, Math.abs(car.speed)/55);
+  car.angle += steer * 2.3 * dt * factor *
+               (car.speed < 0 ? -1 : 1);
+
+  car.x += Math.cos(car.angle)*car.speed*dt;
+  car.y += Math.sin(car.angle)*car.speed*dt;
+
+  const target = points[car.next % points.length];
+  if (dist(car, target) < 32) {
+    car.next = (car.next + 1) % points.length;
+    if (car.next === 1) {
+      laps++;
+      if (laps >= 3) finished = true;
+    }
+  }
+
+  // Poza asfaltem bolid zwalnia
+  let min = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i+1)%points.length];
+    const vx = b.x-a.x, vy = b.y-a.y;
+    const len2 = vx*vx+vy*vy || 1;
+    const t = Math.max(0, Math.min(1,
+      ((car.x-a.x)*vx+(car.y-a.y)*vy)/len2));
+    const d = Math.hypot(car.x-(a.x+t*vx), car.y-(a.y+t*vy));
+    min = Math.min(min, d);
+  }
+
+  if (min > roadWidth/2) car.speed *= Math.pow(.965, dt*60);
+  car.x = Math.max(10, Math.min(W-10, car.x));
+  car.y = Math.max(10, Math.min(H-10, car.y));
+}
+
+function frame(timestamp) {
+  const dt = Math.min((timestamp-lastTime)/1000 || 0, .04);
+  lastTime = timestamp;
+
+  if (racing && !finished) {
+    elapsed += dt;
+    movePlayer(dt);
+    moveAI(ai, dt);
+  }
+
+  drawTrack();
+  if (racing) {
+    drawCar(ai);
+    drawCar(car);
+  }
+  updateInfo();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("click", e => {
+  if (mode !== "edit" || closed || racing) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX-rect.left)*W/rect.width;
+  const y = (e.clientY-rect.top)*H/rect.height;
+  points.push({x, y});
+});
+
+document.getElementById("add").onclick = () => {
+  if (racing) return;
+  mode = "edit";
+  closed = false;
+  document.getElementById("race").disabled = true;
+};
+
+document.getElementById("undo").onclick = () => {
+  if (!racing && !closed) points.pop();
+};
+
+document.getElementById("close").onclick = () => {
+  if (points.length < 5) {
+    alert("Dodaj co najmniej 5 punktów, aby utworzyć tor.");
+    return;
+  }
+  closed = true;
+  mode = "ready";
+  document.getElementById("race").disabled = false;
+};
+
+document.getElementById("race").onclick = () => {
+  if (!closed || points.length < 5) {
+    alert("Najpierw zaprojektuj i zamknij tor!");
+    return;
+  }
+  setupCars();
+  racing = true;
+  mode = "race";
+  document.getElementById("race").textContent = "🔄 Restart wyścigu";
+};
+
+document.getElementById("reset").onclick = () => {
+  points = [];
+  closed = false;
+  racing = false;
+  finished = false;
+  mode = "edit";
+  elapsed = 0;
+  laps = 0;
+  document.getElementById("race").disabled = true;
+  document.getElementById("race").textContent = "🏎️ Start wyścigu";
+};
+
+window.addEventListener("keydown", e => {
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code))
+    e.preventDefault();
+  keys[e.code] = true;
+});
+window.addEventListener("keyup", e => keys[e.code] = false);
+window.addEventListener("blur", () => keys = {});
+
+document.querySelectorAll("[data-key]").forEach(btn => {
+  const k = btn.dataset.key;
+  btn.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    keys[k] = true;
+  });
+  for (const ev of ["pointerup","pointerleave","pointercancel"])
+    btn.addEventListener(ev, () => keys[k] = false);
+});
+
+document.getElementById("race").disabled = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
